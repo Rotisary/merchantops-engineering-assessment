@@ -16,3 +16,9 @@ dist/
 .vscode/
 *.sqlite3
 .private-evaluation/
+
+# AI Blueprint local workflow files
+.agents/
+.claude/
+blueprint/
+CLAUDE.md
