@@ -1,4 +1,4 @@
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.db.models import Prefetch, Q
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions
@@ -10,15 +10,24 @@ from rest_framework.views import APIView
 from catalog.models import (
     AuditLog,
     Availability,
+    Inventory,
     Merchant,
     PriceRule,
     Product,
     ProductVariant,
 )
 from catalog.serializers import (
+    InventoryAdjustmentInputSerializer,
     ProductActivitySerializer,
     ProductListSerializer,
     ProductUpdateSerializer,
+)
+from catalog.util import (
+    adjustment_body,
+    apply_adjustment,
+    idempotency_key,
+    member_merchant_id,
+    previous_adjustment,
 )
 
 
@@ -269,3 +278,46 @@ class ProductActivityView(generics.ListAPIView):
             .select_related("actor")
             .order_by("-created_at", "-id")
         )
+
+
+class InventoryAdjustmentView(APIView):
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request, pk, variant_pk):
+        merchant_id = member_merchant_id(request)
+        product = get_object_or_404(Product, pk=pk, merchant_id=merchant_id)
+        variant = get_object_or_404(
+            ProductVariant,
+            pk=variant_pk,
+            product_id=product.pk,
+        )
+
+        serializer = InventoryAdjustmentInputSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        delta = serializer.validated_data["delta"]
+        reason = serializer.validated_data["reason"]
+        key = idempotency_key(request)
+
+        try:
+            adjustment, inventory, replayed = apply_adjustment(
+                variant, request.user, delta, reason, key
+            )
+        except IntegrityError:
+            # The same key was committed concurrently for another variant.
+            existing = previous_adjustment(request.user, key, variant, delta, reason)
+
+            if existing is None:
+                raise
+
+            adjustment, replayed = existing, True
+            inventory = Inventory.objects.get(variant=variant)
+
+        response = Response(
+            adjustment_body(adjustment, inventory),
+            status=200 if replayed else 201,
+        )
+
+        if replayed:
+            response["Idempotent-Replayed"] = "true"
+
+        return response

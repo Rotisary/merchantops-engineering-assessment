@@ -163,3 +163,42 @@ class AuditLog(models.Model):
 
     class Meta:
         ordering = ["-created_at"]
+
+
+class InventoryAdjustment(models.Model):
+    """Audit record of one manual stock correction to a variant."""
+
+    variant = models.ForeignKey(
+        ProductVariant,
+        on_delete=models.PROTECT,
+        related_name="inventory_adjustments",
+    )
+    actor = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="inventory_adjustments",
+    )
+    delta = models.IntegerField()
+    quantity_before = models.PositiveIntegerField()
+    quantity_after = models.PositiveIntegerField()
+    reason = models.CharField(max_length=255)
+    idempotency_key = models.CharField(max_length=255, null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(
+                condition=~models.Q(delta=0),
+                name="inventory_adjustment_nonzero_delta",
+            ),
+            models.CheckConstraint(
+                condition=models.Q(
+                    quantity_after=models.F("quantity_before") + models.F("delta")
+                ),
+                name="inventory_adjustment_quantities_consistent",
+            ),
+            models.UniqueConstraint(
+                fields=["actor", "idempotency_key"],
+                name="unique_actor_idempotency_key",
+            ),
+        ]

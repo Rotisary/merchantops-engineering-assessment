@@ -2,7 +2,9 @@ import re
 
 from rest_framework import serializers
 
-from catalog.models import AuditLog, Category, Product
+from catalog.models import AuditLog, Category, InventoryAdjustment, Product
+
+MAX_INTEGER = 2147483647
 
 
 class ProductListSerializer(serializers.ModelSerializer):
@@ -107,5 +109,47 @@ class ProductActivitySerializer(serializers.ModelSerializer):
             "actor",
             "action",
             "details",
+            "created_at",
+        ]
+
+
+class InventoryAdjustmentInputSerializer(serializers.Serializer):
+    delta = serializers.IntegerField(min_value=-MAX_INTEGER - 1, max_value=MAX_INTEGER)
+    reason = serializers.CharField(max_length=255)
+
+    def validate_delta(self, value):
+        if value == 0:
+            raise serializers.ValidationError("Adjustment must not be zero.")
+
+        return value
+
+    def validate(self, attrs):
+        unexpected = set(self.initial_data) - set(self.fields)
+
+        if unexpected:
+            raise serializers.ValidationError(
+                {
+                    field: "This field cannot be submitted."
+                    for field in sorted(unexpected)
+                }
+            )
+
+        return attrs
+
+
+class InventoryAdjustmentSerializer(serializers.ModelSerializer):
+    variant_id = serializers.IntegerField(read_only=True)
+    actor = serializers.CharField(source="actor.username", read_only=True)
+
+    class Meta:
+        model = InventoryAdjustment
+        fields = [
+            "id",
+            "variant_id",
+            "delta",
+            "quantity_before",
+            "quantity_after",
+            "reason",
+            "actor",
             "created_at",
         ]
