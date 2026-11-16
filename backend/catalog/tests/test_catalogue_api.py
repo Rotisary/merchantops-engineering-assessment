@@ -4,6 +4,9 @@ from django.urls import reverse
 
 from catalog.models import Category, Merchant, Product
 
+# Session, user, membership, count, and page (with category joined).
+LIST_QUERIES = 5
+
 
 class ProductListAPITests(TestCase):
     @classmethod
@@ -167,3 +170,32 @@ class ProductListAPITests(TestCase):
 
         self.assertEqual(second.status_code, 200)
         self.assertEqual(len(second.data["results"]), 6)
+
+    def test_list_query_count_does_not_grow_with_rows(self):
+        with self.assertNumQueries(LIST_QUERIES):
+            self.client.get(self.url, {"merchant_id": self.merchant.pk})
+
+        categories = [
+            Category.objects.create(merchant=self.merchant, name=f"Category {n}")
+            for n in range(3)
+        ]
+        Product.objects.bulk_create(
+            [
+                Product(
+                    merchant=self.merchant,
+                    category=categories[number % 3],
+                    name=f"Counted Product {number}",
+                    sku=f"CNT-{number:03d}",
+                )
+                for number in range(9)
+            ]
+        )
+
+        with self.assertNumQueries(LIST_QUERIES):
+            response = self.client.get(self.url, {"merchant_id": self.merchant.pk})
+
+        self.assertEqual(len(response.data["results"]), 10)
+        self.assertEqual(
+            {product["category"] for product in response.data["results"]},
+            {"Electronics", "Category 0", "Category 1", "Category 2"},
+        )

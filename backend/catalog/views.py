@@ -1,5 +1,5 @@
 from django.db import transaction
-from django.db.models import Q
+from django.db.models import Prefetch, Q
 from django.shortcuts import get_object_or_404
 from rest_framework import generics, permissions
 from rest_framework.exceptions import ValidationError
@@ -10,7 +10,6 @@ from rest_framework.views import APIView
 from catalog.models import (
     AuditLog,
     Availability,
-    Inventory,
     Merchant,
     PriceRule,
     Product,
@@ -51,7 +50,11 @@ class ProductListView(generics.ListAPIView):
             pk=merchant_id,
         )
 
-        queryset = Product.objects.filter(merchant_id=merchant_id).order_by("id")
+        queryset = (
+            Product.objects.filter(merchant_id=merchant_id)
+            .select_related("category")
+            .order_by("id")
+        )
 
         search = self.request.query_params.get("search", "").strip()
 
@@ -61,6 +64,34 @@ class ProductListView(generics.ListAPIView):
             )
 
         return queryset
+
+
+def variant_payload(variant):
+    # A variant may have no inventory row; the editor reports it as null.
+    inventory = getattr(variant, "inventory", None)
+
+    return {
+        "id": variant.pk,
+        "name": variant.name,
+        "sku": variant.sku,
+        "prices": [
+            {
+                "id": price.pk,
+                "tier": price.tier,
+                "amount": f"{price.amount:.2f}",
+            }
+            for price in variant.price_rules.all()
+        ],
+        "inventory": (
+            {
+                "id": inventory.pk,
+                "quantity": inventory.quantity,
+                "reserved": inventory.reserved,
+            }
+            if inventory is not None
+            else None
+        ),
+    }
 
 
 class ProductEditorView(APIView):
@@ -92,35 +123,13 @@ class ProductEditorView(APIView):
         )
 
         variants = list(
-            ProductVariant.objects.filter(product_id=product.pk).order_by("id")
-        )
-
-        prices_by_variant = {}
-        inventory_by_variant = {}
-
-        for variant in variants:
-            prices_by_variant[variant.pk] = [
-                {
-                    "id": price.pk,
-                    "tier": price.tier,
-                    "amount": f"{price.amount:.2f}",
-                }
-                for price in PriceRule.objects.filter(variant_id=variant.pk).order_by(
-                    "id"
-                )
-            ]
-
-            inventory = Inventory.objects.filter(variant_id=variant.pk).first()
-
-            inventory_by_variant[variant.pk] = (
-                {
-                    "id": inventory.pk,
-                    "quantity": inventory.quantity,
-                    "reserved": inventory.reserved,
-                }
-                if inventory
-                else None
+            ProductVariant.objects.filter(product_id=product.pk)
+            .select_related("inventory")
+            .prefetch_related(
+                Prefetch("price_rules", queryset=PriceRule.objects.order_by("id"))
             )
+            .order_by("id")
+        )
 
         availability = list(
             Availability.objects.filter(product_id=product.pk)
@@ -139,20 +148,12 @@ class ProductEditorView(APIView):
                 "sku": product.sku,
                 "description": product.description,
                 "status": product.status,
+                "image_url": product.image_url,
                 "category": {
                     "id": product.category_id,
                     "name": product.category.name,
                 },
-                "variants": [
-                    {
-                        "id": variant.pk,
-                        "name": variant.name,
-                        "sku": variant.sku,
-                        "prices": prices_by_variant[variant.pk],
-                        "inventory": inventory_by_variant.get(variant.pk),
-                    }
-                    for variant in variants
-                ],
+                "variants": [variant_payload(variant) for variant in variants],
                 "availability": availability,
             }
         )

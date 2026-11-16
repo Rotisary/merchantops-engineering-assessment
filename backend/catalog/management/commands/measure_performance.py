@@ -58,17 +58,15 @@ class Replay:
         return response
 
 
+# Each replay mirrors the requests its frontend view sends. The existing implementation
+# baseline replayed the old views: the catalogue also fetched every listed
+# product's detail one at a time, and the editor also fetched the detail.
 def replay_catalogue(replay, search=""):
-    listing = replay.get(reverse("product-list"), search=search, page=1).json()
-
-    # The catalogue view loads each listed product's detail, one at a time.
-    for item in listing["results"]:
-        replay.get(reverse("product-detail", kwargs={"pk": item["id"]}))
+    replay.get(reverse("product-list"), search=search, page=1)
 
 
 def replay_editor(replay, product):
     replay.get(reverse("product-editor", kwargs={"pk": product.pk}))
-    replay.get(reverse("product-detail", kwargs={"pk": product.pk}))
 
 
 def replay_activity(replay, product):

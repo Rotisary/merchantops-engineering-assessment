@@ -1,12 +1,15 @@
 import re
+from collections import Counter
 from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.db import connection
-from django.test import TestCase, override_settings
+from django.http import HttpResponse
+from django.test import RequestFactory, TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
+from catalog.middleware import SQL_PREVIEW_LENGTH, _log_line
 from catalog.models import (
     Category,
     Inventory,
@@ -94,16 +97,41 @@ class QueryTimingMiddlewareTests(TestCase):
         self.assertRegex(response.headers["Server-Timing"], SERVER_TIMING)
 
     @override_settings(DEBUG=True)
-    def test_log_line_names_repeated_statement_without_query_values(self):
+    def test_log_line_has_no_query_values_or_repeats_for_editor(self):
         with self.assertLogs("catalog.perf", "INFO") as logs:
             self.get_editor(self.product)
 
         self.assertEqual(len(logs.output), 1)
         line = logs.output[0]
         self.assertIn("queries=", line)
-        self.assertIn(" top=", line)
-        self.assertIn("catalog_pricerule", line)
+        # The editor loads prices in one query, so no statement repeats.
+        self.assertNotIn(" top=", line)
         self.assertNotIn("merchant_id=", line)
+
+    def test_log_line_names_most_repeated_statement(self):
+        request = RequestFactory().get("/api/products/", {"merchant_id": 7})
+        statements = Counter(
+            {
+                "SELECT  `catalog_pricerule`.`id`\n  FROM `catalog_pricerule`": 3,
+                "SELECT 1": 1,
+            }
+        )
+
+        line = _log_line(request, HttpResponse(), 4, 1.5, 9.25, statements)
+
+        self.assertEqual(
+            line,
+            "GET /api/products/ 200 queries=4 db=1.50ms app=9.25ms "
+            'top=3x "SELECT `catalog_pricerule`.`id` FROM `catalog_pricerule`"',
+        )
+
+    def test_log_line_truncates_long_statements(self):
+        request = RequestFactory().get("/api/products/")
+        long_sql = "SELECT " + "x" * 300
+
+        line = _log_line(request, HttpResponse(), 2, 1.0, 2.0, Counter({long_sql: 2}))
+
+        self.assertIn(f'top=2x "{long_sql[:SQL_PREVIEW_LENGTH]}"', line)
 
     @override_settings(DEBUG=True)
     def test_not_found_response_keeps_status_and_gets_headers(self):
